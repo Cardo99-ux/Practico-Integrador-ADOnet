@@ -1,0 +1,13 @@
+# Carpetas de compilación y binarios de .NET
+[Bb]in/
+[Oo]bj/
+
+# Archivos de configuración local de VS Code y Visual Studio
+.vscode/
+.vs/
+*.user
+*.suo
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
