@@ -308,58 +308,57 @@ public class AccesoPostgres : IAccesoDatos
         }
     }
 
-    public void DemostrarRollback()
+public void DemostrarRollback()
     {
         using (var conn = new NpgsqlConnection(ConnApp))
         {
             conn.Open();
 
-            // Guardamos la cantidad de pedidos iniciales para corroborar el rollback al final
-            int pedidosIniciales = 0;
-            using (var cmdCount = new NpgsqlCommand("SELECT COUNT(*) FROM public.pedidos;", conn))
+            // 1. Obtener precio ANTES (Notebook ya afectada por el +10% de U1)
+            decimal precioAntes = 0;
+            string queryGet = "SELECT precio FROM public.productos WHERE id = 1;";
+            using (var cmd = new NpgsqlCommand(queryGet, conn))
             {
-                pedidosIniciales = Convert.ToInt32(cmdCount.ExecuteScalar());
+                precioAntes = Convert.ToDecimal(cmd.ExecuteScalar());
             }
+            Console.WriteLine($"Precio del producto #1 ANTES: ${precioAntes:F2}");
 
             using (var tx = conn.BeginTransaction())
             {
                 try
                 {
-                    // 1. Intentamos una inserción válida
-                    string sqlInsertValido = "INSERT INTO public.pedidos (cliente_id, fecha) VALUES (@clienteId, @fecha);";
-                    using (var cmd = new NpgsqlCommand(sqlInsertValido, conn, tx))
+                    // 2. Modificar el precio a $1
+                    string sqlUpdate = "UPDATE public.productos SET precio = 1.00 WHERE id = 1;";
+                    using (var cmd = new NpgsqlCommand(sqlUpdate, conn, tx))
                     {
-                        cmd.Parameters.AddWithValue("@clienteId", 1);
-                        cmd.Parameters.AddWithValue("@fecha", DateTime.Now);
                         cmd.ExecuteNonQuery();
                     }
+                    Console.WriteLine("UPDATE aplicado (precio -> 1) dentro de la transacción.");
 
-                    // 2. Provocamos un error de sintaxis SQL a propósito (Falla voluntaria)
-                    string sqlInvalido = "INSERT INTO tabla_inexistente_que_falla_adrede VALUES (1,2,3);";
-                    using (var cmdFalla = new NpgsqlCommand(sqlInvalido, conn, tx))
+                    // 3. Forzar la excepción rompiendo la sintaxis a propósito
+                    string sqlFalla = "FORCE_ERROR_HERE;";
+                    using (var cmdFalla = new NpgsqlCommand(sqlFalla, conn, tx))
                     {
                         cmdFalla.ExecuteNonQuery();
                     }
 
-                    tx.Commit(); // Nunca llegará acá
+                    tx.Commit();
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     tx.Rollback();
-                    Console.WriteLine($"\n[Rollback Exitoso] Se capturó excepción esperada: {ex.Message}");
+                    Console.WriteLine("Excepción capturada -> ROLLBACK. (Error simulado: algo salió mal.)");
                 }
             }
 
-            // Validamos que la base de datos no haya sufrido cambios parciales
-            using (var cmdCountFinal = new NpgsqlCommand("SELECT COUNT(*) FROM public.pedidos;", conn))
+            // 4. Obtener precio DESPUÉS para validar la atomicidad
+            decimal precioDespues = 0;
+            using (var cmd = new NpgsqlCommand(queryGet, conn))
             {
-                int pedidosFinales = Convert.ToInt32(cmdCountFinal.ExecuteScalar());
-                Console.WriteLine($"Pedidos antes de la falla: {pedidosIniciales} | Pedidos después del rollback: {pedidosFinales}");
-                if (pedidosIniciales == pedidosFinales)
-                {
-                    Console.WriteLine("Resultado: Atomicidad comprobada al 100%. No se guardaron datos parciales.");
-                }
+                precioDespues = Convert.ToDecimal(cmd.ExecuteScalar());
             }
+            
+            Console.WriteLine($"Precio del producto #1 DESPUÉS: ${precioDespues:F2} {(precioAntes == precioDespues ? "OK: el rollback funcionó, el dato NO cambió." : "ERROR")}");
         }
     }
 }

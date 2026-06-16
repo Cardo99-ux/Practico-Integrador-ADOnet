@@ -280,53 +280,53 @@ public class AccesoMySql : IAccesoDatos
         }
     }
 
-    public void DemostrarRollback()
+public void DemostrarRollback()
     {
         using (var conn = new MySqlConnection(ConnApp))
         {
             conn.Open();
-            int pedidosIniciales = 0;
-            using (var cmdCount = new MySqlCommand("SELECT COUNT(*) FROM pedidos;", conn))
+
+            decimal precioAntes = 0;
+            string queryGet = "SELECT precio FROM productos WHERE id = 1;";
+            using (var cmd = new MySqlCommand(queryGet, conn))
             {
-                pedidosIniciales = Convert.ToInt32(cmdCount.ExecuteScalar());
+                precioAntes = Convert.ToDecimal(cmd.ExecuteScalar());
             }
+            Console.WriteLine($"Precio del producto #1 ANTES: ${precioAntes:F2}");
 
             using (var tx = conn.BeginTransaction())
             {
                 try
                 {
-                    string sqlInsertValido = "INSERT INTO pedidos (cliente_id, fecha) VALUES (@clienteId, @fecha);";
-                    using (var cmd = new MySqlCommand(sqlInsertValido, conn, tx))
+                    string sqlUpdate = "UPDATE productos SET precio = 1.00 WHERE id = 1;";
+                    using (var cmd = new MySqlCommand(sqlUpdate, conn, tx))
                     {
-                        cmd.Parameters.AddWithValue("@clienteId", 1);
-                        cmd.Parameters.AddWithValue("@fecha", DateTime.Now);
                         cmd.ExecuteNonQuery();
                     }
+                    Console.WriteLine("UPDATE aplicado (precio -> 1) dentro de la transacción.");
 
-                    string sqlInvalido = "INSERT INTO tabla_inexistente_que_falla_adrede VALUES (1,2,3);";
-                    using (var cmdFalla = new MySqlCommand(sqlInvalido, conn, tx))
+                    string sqlFalla = "FORCE_ERROR_HERE;";
+                    using (var cmdFalla = new MySqlCommand(sqlFalla, conn, tx))
                     {
                         cmdFalla.ExecuteNonQuery();
                     }
 
                     tx.Commit();
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     tx.Rollback();
-                    Console.WriteLine($"\n[Rollback Exitoso] Se capturó excepción esperada: {ex.Message}");
+                    Console.WriteLine("Excepción capturada -> ROLLBACK. (Error simulado: algo salió mal.)");
                 }
             }
 
-            using (var cmdCountFinal = new MySqlCommand("SELECT COUNT(*) FROM pedidos;", conn))
+            decimal precioDespues = 0;
+            using (var cmd = new MySqlCommand(queryGet, conn))
             {
-                int pedidosFinales = Convert.ToInt32(cmdCountFinal.ExecuteScalar());
-                Console.WriteLine($"Pedidos antes de la falla: {pedidosIniciales} | Pedidos después del rollback: {pedidosFinales}");
-                if (pedidosIniciales == pedidosFinales)
-                {
-                    Console.WriteLine("Resultado: Atomicidad comprobada al 100%. No se guardaron datos parciales.");
-                }
+                precioDespues = Convert.ToDecimal(cmd.ExecuteScalar());
             }
+            
+            Console.WriteLine($"Precio del producto #1 DESPUÉS: ${precioDespues:F2} {(precioAntes == precioDespues ? "OK: el rollback funcionó, el dato NO cambió." : "ERROR")}");
         }
     }
 }
