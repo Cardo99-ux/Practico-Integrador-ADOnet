@@ -10,19 +10,19 @@ public class AccesoMySql : IAccesoDatos
 
     public void CrearEstructura()
     {
-        // 1. Conectarse al servidor sin especificar base para crearla
+        // 1. Conectarse al servidor de administración sin especificar base para verificarla/crearla
         using (var adminConn = new MySqlConnection(ConnAdmin))
         {
             adminConn.Open();
-            string sqlDb = "CREATE DATABASE IF NOT EXISTS practico;";
+            string sqlDb = "CREATE DATABASE IF NOT EXISTS practico CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;";
             using (var cmd = new MySqlCommand(sqlDb, adminConn))
             {
                 cmd.ExecuteNonQuery();
             }
-            Console.WriteLine("Base 'practico' verificada/creada.");
+            Console.WriteLine("Base 'practico' creada."); // Log exacto según salida esperada
         }
 
-        // 2. Conectarse a la base practico para las tablas
+        // 2. Conectarse a la base practico para armar las tablas (re-ejecutable y fuera de transacción)
         using (var appConn = new MySqlConnection(ConnApp))
         {
             appConn.Open();
@@ -30,8 +30,8 @@ public class AccesoMySql : IAccesoDatos
             string ddlDrop = @"
                 DROP TABLE IF EXISTS detalle_pedido;
                 DROP TABLE IF EXISTS pedidos;
-                DROP TABLE IF EXISTS clientes;
                 DROP TABLE IF EXISTS productos;
+                DROP TABLE IF EXISTS clientes;
                 DROP TABLE IF EXISTS categorias;
             ";
 
@@ -40,43 +40,44 @@ public class AccesoMySql : IAccesoDatos
                 dropCmd.ExecuteNonQuery();
             }
 
+            // DDL basado exactamente en las estructuras reales de tu archivo laboratorio-sql-mysql.sql
             string ddlCreate = @"
                 CREATE TABLE categorias (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    nombre VARCHAR(100) NOT NULL
-                );
-
-                CREATE TABLE productos (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    nombre VARCHAR(150) NOT NULL,
-                    precio DECIMAL(12, 2) NOT NULL,
-                    stock INT NOT NULL,
-                    categoria_id INT NOT NULL,
-                    CONSTRAINT fk_productos_categorias FOREIGN KEY (categoria_id) REFERENCES categorias(id)
-                );
+                    nombre VARCHAR(60) NOT NULL UNIQUE
+                ) ENGINE=InnoDB;
 
                 CREATE TABLE clientes (
                     id INT AUTO_INCREMENT PRIMARY KEY,
+                    nombre VARCHAR(80) NOT NULL,
+                    email VARCHAR(120) NOT NULL UNIQUE
+                ) ENGINE=InnoDB;
+
+                CREATE TABLE productos (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
                     nombre VARCHAR(100) NOT NULL,
-                    email VARCHAR(150) NOT NULL
-                );
+                    precio DECIMAL(10,2) NOT NULL,
+                    stock INT NOT NULL DEFAULT 0,
+                    categoria_id INT NOT NULL,
+                    CONSTRAINT fk_producto_categoria FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB;
 
                 CREATE TABLE pedidos (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     cliente_id INT NOT NULL,
-                    fecha DATETIME NOT NULL,
-                    CONSTRAINT fk_pedidos_clientes FOREIGN KEY (cliente_id) REFERENCES clientes(id)
-                );
+                    fecha DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_pedido_cliente FOREIGN KEY (cliente_id) REFERENCES clientes(id) ON DELETE CASCADE
+                ) ENGINE=InnoDB;
 
                 CREATE TABLE detalle_pedido (
                     pedido_id INT NOT NULL,
                     producto_id INT NOT NULL,
                     cantidad INT NOT NULL,
-                    precio_unitario DECIMAL(12, 2) NOT NULL,
+                    precio_unit DECIMAL(10,2) NOT NULL, -- Columna corregida según tu script de laboratorio
                     PRIMARY KEY (pedido_id, producto_id),
-                    CONSTRAINT fk_detalle_pedidos FOREIGN KEY (pedido_id) REFERENCES pedidos(id),
-                    CONSTRAINT fk_detalle_productos FOREIGN KEY (producto_id) REFERENCES productos(id)
-                );
+                    CONSTRAINT fk_detalle_pedido FOREIGN KEY (pedido_id) REFERENCES pedidos(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_detalle_producto FOREIGN KEY (producto_id) REFERENCES productos(id) ON DELETE RESTRICT
+                ) ENGINE=InnoDB;
             ";
 
             using (var createCmd = new MySqlCommand(ddlCreate, appConn))
@@ -156,7 +157,7 @@ public class AccesoMySql : IAccesoDatos
 
                     // --- 4. PEDIDOS Y DETALLES ---
                     string sqlPed = "INSERT INTO pedidos (cliente_id, fecha) VALUES (@clienteId, @fecha);";
-                    string sqlDet = "INSERT INTO detalle_pedido (pedido_id, producto_id, cantidad, precio_unitario) VALUES (@pedidoId, @productoId, @cantidad, @precioUnitario);";
+                    string sqlDet = "INSERT INTO detalle_pedido (pedido_id, producto_id, cantidad, precio_unit) VALUES (@pedidoId, @productoId, @cantidad, @precioUnit);";
 
                     int ped1Id;
                     using (var cmd = new MySqlCommand(sqlPed, conn, tx))
@@ -198,94 +199,105 @@ public class AccesoMySql : IAccesoDatos
             cmd.Parameters.AddWithValue("@pedidoId", pedId);
             cmd.Parameters.AddWithValue("@productoId", prodId);
             cmd.Parameters.AddWithValue("@cantidad", cant);
-            cmd.Parameters.AddWithValue("@precioUnitario", precio);
+            cmd.Parameters.AddWithValue("@precioUnit", precio); // Parámetro adaptado a precio_unit
             cmd.ExecuteNonQuery();
         }
     }
+
     public void EjecutarOperaciones()
     {
         using (var conn = new MySqlConnection(ConnApp))
         {
             conn.Open();
-
-            // --- [C1] ---
-            Console.WriteLine("[C1] Productos con su categoría:");
-            string queryC1 = @"
-                SELECT p.id, p.nombre, p.precio, c.nombre AS categoria_nombre 
-                FROM productos p 
-                INNER JOIN categorias c ON p.categoria_id = c.id 
-                ORDER BY p.id;";
-
-            using (var cmd = new MySqlConnection(ConnApp).CreateCommand())
+            using (var tx = conn.BeginTransaction())
             {
-                // Alternativa estándar directa
-                using (var cmdReal = new MySqlCommand(queryC1, conn))
-                using (var reader = cmdReal.ExecuteReader())
+                try
                 {
-                    while (reader.Read())
+                    // --- [C1] ---
+                    Console.WriteLine("[C1] Productos con su categoría:");
+                    string queryC1 = @"
+                        SELECT p.id, p.nombre, p.precio, c.nombre AS categoria_nombre 
+                        FROM productos p 
+                        INNER JOIN categorias c ON p.categoria_id = c.id 
+                        ORDER BY p.id;";
+
+                    using (var cmd = new MySqlCommand(queryC1, conn, tx))
+                    using (var reader = cmd.ExecuteReader())
                     {
-                        int id = reader.GetInt32(0);
-                        string nombre = reader.GetString(1);
-                        decimal precio = reader.GetDecimal(2);
-                        string catNombre = reader.GetString(3);
-                        Console.WriteLine($"#{id} {nombre} — ${precio:F2} [{catNombre}]");
+                        while (reader.Read())
+                        {
+                            int id = reader.GetInt32(0);
+                            string nombre = reader.GetString(1);
+                            decimal precio = reader.GetDecimal(2);
+                            string catNombre = reader.GetString(3);
+                            Console.WriteLine($"#{id} {nombre} — ${precio:F2} [{catNombre}]");
+                        }
                     }
+
+                    // --- [C2] ---
+                    Console.WriteLine("\n[C2] Detalle y total del pedido #1:");
+                    string queryC2 = @"
+                        SELECT p.nombre, dp.cantidad, dp.precio_unit 
+                        FROM detalle_pedido dp
+                        INNER JOIN productos p ON dp.producto_id = p.id
+                        WHERE dp.pedido_id = 1
+                        ORDER BY p.nombre DESC;"; // Orden descendente para cumplir con la consola modelo
+
+                    decimal totalPedido = 0;
+                    using (var cmd = new MySqlCommand(queryC2, conn, tx))
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            string prodNombre = reader.GetString(0);
+                            int cantidad = reader.GetInt32(1);
+                            decimal precioUnit = reader.GetDecimal(2);
+                            decimal subtotal = cantidad * precioUnit;
+                            totalPedido += subtotal;
+
+                            Console.WriteLine($"{prodNombre} x{cantidad} @ ${precioUnit:F2} = ${subtotal:F2}");
+                        }
+                    }
+                    Console.WriteLine($"TOTAL pedido #1: ${totalPedido:F2}");
+
+                    // --- [U1] ---
+                    string queryU1 = "UPDATE productos SET precio = precio * 1.10 WHERE categoria_id = @catId;";
+                    using (var cmd = new MySqlCommand(queryU1, conn, tx))
+                    {
+                        cmd.Parameters.AddWithValue("@catId", 1);
+                        int filasAfectadas = cmd.ExecuteNonQuery();
+                        Console.WriteLine($"\n[U1] Subí 10% precios de categoría #1 -> {filasAfectadas} filas.");
+                    }
+
+                    // --- [D1] ---
+                    string queryD1 = "DELETE FROM detalle_pedido WHERE pedido_id = @pedidoId AND producto_id = @productoId;";
+                    using (var cmd = new MySqlCommand(queryD1, conn, tx))
+                    {
+                        cmd.Parameters.AddWithValue("@pedidoId", 1);
+                        cmd.Parameters.AddWithValue("@productoId", 2);
+                        int filasAfectadas = cmd.ExecuteNonQuery();
+                        Console.WriteLine($"[D1] Borré línea (pedido 1, producto 2) -> {filasAfectadas} filas.");
+                    }
+
+                    tx.Commit();
+                    Console.WriteLine("Operaciones estas confirmadas (commit).");
                 }
-            }
-
-            // --- [C2] ---
-            Console.WriteLine("\n[C2] Detalle y total del pedido #1:");
-            string queryC2 = @"
-                SELECT p.nombre, dp.cantidad, dp.precio_unitario 
-                FROM detalle_pedido dp
-                INNER JOIN productos p ON dp.producto_id = p.id
-                WHERE dp.pedido_id = 1
-                ORDER BY p.nombre DESC;";
-
-            decimal totalPedido = 0;
-            using (var cmd = new MySqlCommand(queryC2, conn))
-            using (var reader = cmd.ExecuteReader())
-            {
-                while (reader.Read())
+                catch (Exception)
                 {
-                    string prodNombre = reader.GetString(0);
-                    int cantidad = reader.GetInt32(1);
-                    decimal precioUnitario = reader.GetDecimal(2);
-                    decimal subtotal = cantidad * precioUnitario;
-                    totalPedido += subtotal;
-
-                    Console.WriteLine($"{prodNombre} x{cantidad} @ ${precioUnitario:F2} = ${subtotal:F2}");
+                    tx.Rollback();
+                    throw;
                 }
-            }
-            Console.WriteLine($"TOTAL pedido #1: ${totalPedido:F2}");
-
-            // --- [U1] ---
-            string queryU1 = "UPDATE productos SET precio = precio * 1.10 WHERE categoria_id = @catId;";
-            using (var cmd = new MySqlCommand(queryU1, conn))
-            {
-                cmd.Parameters.AddWithValue("@catId", 1);
-                int filasAfectadas = cmd.ExecuteNonQuery();
-                Console.WriteLine($"\n[U1] Subí 10% precios de categoría #1 -> {filasAfectadas} filas.");
-            }
-
-            // --- [D1] ---
-            string queryD1 = "DELETE FROM detalle_pedido WHERE pedido_id = @pedidoId AND producto_id = @productoId;";
-            using (var cmd = new MySqlCommand(queryD1, conn))
-            {
-                cmd.Parameters.AddWithValue("@pedidoId", 1);
-                cmd.Parameters.AddWithValue("@productoId", 2);
-                int filasAfectadas = cmd.ExecuteNonQuery();
-                Console.WriteLine($"[D1] Borré línea (pedido 1, producto 2) -> {filasAfectadas} filas.");
             }
         }
     }
 
-public void DemostrarRollback()
+    public void DemostrarRollback()
     {
         using (var conn = new MySqlConnection(ConnApp))
         {
             conn.Open();
 
+            // 1. Obtener precio ANTES
             decimal precioAntes = 0;
             string queryGet = "SELECT precio FROM productos WHERE id = 1;";
             using (var cmd = new MySqlCommand(queryGet, conn))
@@ -298,6 +310,7 @@ public void DemostrarRollback()
             {
                 try
                 {
+                    // 2. Modificar el precio a $1.00 provisionalmente
                     string sqlUpdate = "UPDATE productos SET precio = 1.00 WHERE id = 1;";
                     using (var cmd = new MySqlCommand(sqlUpdate, conn, tx))
                     {
@@ -305,6 +318,7 @@ public void DemostrarRollback()
                     }
                     Console.WriteLine("UPDATE aplicado (precio -> 1) dentro de la transacción.");
 
+                    // 3. Forzar el error de sintaxis exigido
                     string sqlFalla = "FORCE_ERROR_HERE;";
                     using (var cmdFalla = new MySqlCommand(sqlFalla, conn, tx))
                     {
@@ -320,6 +334,7 @@ public void DemostrarRollback()
                 }
             }
 
+            // 4. Obtener precio DESPUÉS para validar la atomicidad relacional
             decimal precioDespues = 0;
             using (var cmd = new MySqlCommand(queryGet, conn))
             {

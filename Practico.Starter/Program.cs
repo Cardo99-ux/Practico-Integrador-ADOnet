@@ -32,7 +32,7 @@ class Program
             Console.WriteLine("1. PostgreSQL");
             Console.WriteLine("2. SQL Server");
             Console.WriteLine("3. MySQL");
-            Console.Write("Seleccione una opción (1-3): ");
+            Console.Write("Seleccione una opción [1-3]: ");
             
             string? opcion = Console.ReadLine();
             motorSeleccionado = opcion switch
@@ -45,7 +45,7 @@ class Program
 
             if (motorSeleccionado == null)
             {
-                Console.WriteLine("Opción no válida. Saliendo del programa.");
+                Console.WriteLine("[!] Opción no válida. Saliendo del programa...");
                 return;
             }
         }

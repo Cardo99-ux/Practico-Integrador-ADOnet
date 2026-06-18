@@ -1,82 +1,86 @@
 using System;
-using System.Data;
 using Microsoft.Data.SqlClient;
 
 namespace Practico.Starter.Datos;
 
 public class AccesoSqlServer : IAccesoDatos
 {
-    private const string ConnAdmin = "Server=localhost,1433;User Id=sa;Password=Curso.NET2026;Database=master;TrustServerCertificate=True;";
-    private const string ConnApp = "Server=localhost,1433;User Id=sa;Password=Curso.NET2026;Database=practico;TrustServerCertificate=True;";
+    private const string ConnAdmin = "Server=localhost;Database=master;User Id=sa;Password=Curso.NET2026;TrustServerCertificate=True;";
+    private const string ConnApp = "Server=localhost;Database=practico;User Id=sa;Password=Curso.NET2026;TrustServerCertificate=True;";
 
     public void CrearEstructura()
     {
-        // 1. Conectarse a master para verificar/crear la base
+        // 1. Conectarse a 'master' para verificar/crear la base de datos del práctico
         using (var adminConn = new SqlConnection(ConnAdmin))
         {
             adminConn.Open();
-
-            // Este script verifica si existe. Si existe, la pone en modo SINGLE_USER para cerrar 
-            // conexiones viejas en el pool de .NET, la borra y la crea limpia.
-            string sqlDb = @"
-                IF DB_ID('practico') IS NOT NULL
+            string checkDbSql = @"
+                IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'practico')
                 BEGIN
-                    ALTER DATABASE practico SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-                    DROP DATABASE practico;
-                END
-                CREATE DATABASE practico;";
-
-            using (var cmd = new SqlCommand(sqlDb, adminConn))
+                    CREATE DATABASE practico;
+                END";
+            using (var cmd = new SqlCommand(checkDbSql, adminConn))
             {
                 cmd.ExecuteNonQuery();
             }
-            Console.WriteLine("Base 'practico' recreada limpiamente en SQL Server.");
+            Console.WriteLine("Base 'practico' verificada/creada.");
         }
 
-        // Forzamos limpiar el pool de conexiones de .NET para que no use una conexión vieja a 'master'
-        SqlConnection.ClearAllPools();
-
-        // 2. Conectarse a practico para armar las tablas en el esquema 'dbo'
+        // 2. Conectarse a 'practico' para armar las tablas (re-ejecutable y fuera de transacción)
         using (var appConn = new SqlConnection(ConnApp))
         {
             appConn.Open();
 
+            string ddlDrop = @"
+                IF OBJECT_ID('detalle_pedido', 'U') IS NOT NULL DROP TABLE detalle_pedido;
+                IF OBJECT_ID('pedidos', 'U') IS NOT NULL DROP TABLE pedidos;
+                IF OBJECT_ID('productos', 'U') IS NOT NULL DROP TABLE productos;
+                IF OBJECT_ID('clientes', 'U') IS NOT NULL DROP TABLE clientes;
+                IF OBJECT_ID('categorias', 'U') IS NOT NULL DROP TABLE categorias;
+            ";
+
+            using (var dropCmd = new SqlCommand(ddlDrop, appConn))
+            {
+                dropCmd.ExecuteNonQuery();
+            }
+
+            // DDL basado estrictamente en el dialecto de tu archivo laboratorio-sql-sqlserver.sql
             string ddlCreate = @"
-                CREATE TABLE dbo.categorias (
+                CREATE TABLE categorias (
                     id INT IDENTITY(1,1) PRIMARY KEY,
-                    nombre VARCHAR(100) NOT NULL
+                    nombre NVARCHAR(60) NOT NULL UNIQUE
                 );
 
-                CREATE TABLE dbo.productos (
+                CREATE TABLE clientes (
                     id INT IDENTITY(1,1) PRIMARY KEY,
-                    nombre VARCHAR(150) NOT NULL,
-                    precio DECIMAL(12, 2) NOT NULL,
-                    stock INT NOT NULL,
+                    nombre NVARCHAR(80) NOT NULL,
+                    email NVARCHAR(120) NOT NULL UNIQUE
+                );
+
+                CREATE TABLE productos (
+                    id INT IDENTITY(1,1) PRIMARY KEY,
+                    nombre NVARCHAR(100) NOT NULL,
+                    precio DECIMAL(10,2) NOT NULL,
+                    stock INT NOT NULL DEFAULT 0,
                     categoria_id INT NOT NULL,
-                    CONSTRAINT fk_productos_categorias FOREIGN KEY (categoria_id) REFERENCES dbo.categorias(id)
+                    CONSTRAINT fk_producto_categoria FOREIGN KEY (categoria_id) REFERENCES categorias(id) ON DELETE NO ACTION
                 );
 
-                CREATE TABLE dbo.clientes (
-                    id INT IDENTITY(1,1) PRIMARY KEY,
-                    nombre VARCHAR(100) NOT NULL,
-                    email VARCHAR(150) NOT NULL
-                );
-
-                CREATE TABLE dbo.pedidos (
+                CREATE TABLE pedidos (
                     id INT IDENTITY(1,1) PRIMARY KEY,
                     cliente_id INT NOT NULL,
-                    fecha DATETIME NOT NULL,
-                    CONSTRAINT fk_pedidos_clientes FOREIGN KEY (cliente_id) REFERENCES dbo.clientes(id)
+                    fecha DATETIME NOT NULL DEFAULT GETDATE(),
+                    CONSTRAINT fk_pedido_cliente FOREIGN KEY (cliente_id) REFERENCES clientes(id) ON DELETE CASCADE
                 );
 
-                CREATE TABLE dbo.detalle_pedido (
+                CREATE TABLE detalle_pedido (
                     pedido_id INT NOT NULL,
                     producto_id INT NOT NULL,
                     cantidad INT NOT NULL,
-                    precio_unitario DECIMAL(12, 2) NOT NULL,
+                    precio_unit DECIMAL(10,2) NOT NULL, -- Columna exacta corregida
                     PRIMARY KEY (pedido_id, producto_id),
-                    CONSTRAINT fk_detalle_pedidos FOREIGN KEY (pedido_id) REFERENCES dbo.pedidos(id),
-                    CONSTRAINT fk_detalle_productos FOREIGN KEY (producto_id) REFERENCES dbo.productos(id)
+                    CONSTRAINT fk_detalle_pedido FOREIGN KEY (pedido_id) REFERENCES pedidos(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_detalle_producto FOREIGN KEY (producto_id) REFERENCES productos(id) ON DELETE NO ACTION
                 );
             ";
 
@@ -84,7 +88,7 @@ public class AccesoSqlServer : IAccesoDatos
             {
                 createCmd.ExecuteNonQuery();
             }
-            Console.WriteLine("Estructura (5 tablas dbo) creada.");
+            Console.WriteLine("Estructura (5 tablas) creada.");
         }
     }
 
@@ -97,12 +101,12 @@ public class AccesoSqlServer : IAccesoDatos
             {
                 try
                 {
-                    // --- 1. CATEGORÍAS ---
+                    // --- 1. CATEGORÍAS (Uso nativo de SCOPE_IDENTITY()) ---
                     int catElectronicaId, catLibrosId, catHogarId;
-                    string sqlCat = "INSERT INTO dbo.categorias (nombre) VALUES (@nombre); SELECT SCOPE_IDENTITY();";
+                    string sqlCat = "INSERT INTO categorias (nombre) VALUES (@nombre); SELECT SCOPE_IDENTITY();";
                     using (var cmd = new SqlCommand(sqlCat, conn, tx))
                     {
-                        cmd.Parameters.Add("@nombre", SqlDbType.VarChar);
+                        cmd.Parameters.Add("@nombre", System.Data.SqlDbType.NVarChar);
 
                         cmd.Parameters["@nombre"].Value = "Electrónica";
                         catElectronicaId = Convert.ToInt32(cmd.ExecuteScalar());
@@ -116,13 +120,13 @@ public class AccesoSqlServer : IAccesoDatos
 
                     // --- 2. PRODUCTOS ---
                     int prodNotebook, prodMouse, prodTeclado, prodCleanCode, prodLampara;
-                    string sqlProd = "INSERT INTO dbo.productos (nombre, precio, stock, categoria_id) VALUES (@nombre, @precio, @stock, @catId); SELECT SCOPE_IDENTITY();";
+                    string sqlProd = "INSERT INTO productos (nombre, precio, stock, categoria_id) VALUES (@nombre, @precio, @stock, @catId); SELECT SCOPE_IDENTITY();";
                     using (var cmd = new SqlCommand(sqlProd, conn, tx))
                     {
-                        cmd.Parameters.Add("@nombre", SqlDbType.VarChar);
-                        cmd.Parameters.Add("@precio", SqlDbType.Decimal);
-                        cmd.Parameters.Add("@stock", SqlDbType.Int);
-                        cmd.Parameters.Add("@catId", SqlDbType.Int);
+                        cmd.Parameters.Add("@nombre", System.Data.SqlDbType.NVarChar);
+                        cmd.Parameters.Add("@precio", System.Data.SqlDbType.Decimal);
+                        cmd.Parameters.Add("@stock", System.Data.SqlDbType.Int);
+                        cmd.Parameters.Add("@catId", System.Data.SqlDbType.Int);
 
                         cmd.Parameters["@nombre"].Value = "Notebook 14\""; cmd.Parameters["@precio"].Value = 850000.00m; cmd.Parameters["@stock"].Value = 10; cmd.Parameters["@catId"].Value = catElectronicaId;
                         prodNotebook = Convert.ToInt32(cmd.ExecuteScalar());
@@ -142,11 +146,11 @@ public class AccesoSqlServer : IAccesoDatos
 
                     // --- 3. CLIENTES ---
                     int cliJuan, cliMaria;
-                    string sqlCli = "INSERT INTO dbo.clientes (nombre, email) VALUES (@nombre, @email); SELECT SCOPE_IDENTITY();";
+                    string sqlCli = "INSERT INTO clientes (nombre, email) VALUES (@nombre, @email); SELECT SCOPE_IDENTITY();";
                     using (var cmd = new SqlCommand(sqlCli, conn, tx))
                     {
-                        cmd.Parameters.Add("@nombre", SqlDbType.VarChar);
-                        cmd.Parameters.Add("@email", SqlDbType.VarChar);
+                        cmd.Parameters.Add("@nombre", System.Data.SqlDbType.NVarChar);
+                        cmd.Parameters.Add("@email", System.Data.SqlDbType.NVarChar);
 
                         cmd.Parameters["@nombre"].Value = "Juan Perez"; cmd.Parameters["@email"].Value = "juan@email.com";
                         cliJuan = Convert.ToInt32(cmd.ExecuteScalar());
@@ -156,8 +160,8 @@ public class AccesoSqlServer : IAccesoDatos
                     }
 
                     // --- 4. PEDIDOS Y DETALLES ---
-                    string sqlPed = "INSERT INTO dbo.pedidos (cliente_id, fecha) VALUES (@clienteId, @fecha); SELECT SCOPE_IDENTITY();";
-                    string sqlDet = "INSERT INTO dbo.detalle_pedido (pedido_id, producto_id, cantidad, precio_unitario) VALUES (@pedidoId, @productoId, @cantidad, @precioUnitario);";
+                    string sqlPed = "INSERT INTO pedidos (cliente_id, fecha) VALUES (@clienteId, @fecha); SELECT SCOPE_IDENTITY();";
+                    string sqlDet = "INSERT INTO detalle_pedido (pedido_id, producto_id, cantidad, precio_unit) VALUES (@pedidoId, @productoId, @cantidad, @precioUnit);";
 
                     int ped1Id;
                     using (var cmd = new SqlCommand(sqlPed, conn, tx))
@@ -181,7 +185,7 @@ public class AccesoSqlServer : IAccesoDatos
                     ExecuteDetalleSqlServer(conn, tx, sqlDet, ped2Id, prodLampara, 2, 15000.00m);
 
                     tx.Commit();
-                    Console.WriteLine("Datos de prueba insertados (commit) en SQL Server.");
+                    Console.WriteLine("Datos de prueba insertados (commit).");
                 }
                 catch (Exception)
                 {
@@ -199,7 +203,7 @@ public class AccesoSqlServer : IAccesoDatos
             cmd.Parameters.AddWithValue("@pedidoId", pedId);
             cmd.Parameters.AddWithValue("@productoId", prodId);
             cmd.Parameters.AddWithValue("@cantidad", cant);
-            cmd.Parameters.AddWithValue("@precioUnitario", precio);
+            cmd.Parameters.AddWithValue("@precioUnit", precio);
             cmd.ExecuteNonQuery();
         }
     }
@@ -209,81 +213,95 @@ public class AccesoSqlServer : IAccesoDatos
         using (var conn = new SqlConnection(ConnApp))
         {
             conn.Open();
-
-            // --- [C1] ---
-            Console.WriteLine("[C1] Productos con su categoría:");
-            string queryC1 = @"
-                SELECT p.id, p.nombre, p.precio, c.nombre AS categoria_nombre 
-                FROM productos p 
-                INNER JOIN categorias c ON p.categoria_id = c.id 
-                ORDER BY p.id;";
-
-            using (var cmd = new SqlCommand(queryC1, conn))
-            using (var reader = cmd.ExecuteReader())
+            using (var tx = conn.BeginTransaction())
             {
-                while (reader.Read())
+                try
                 {
-                    int id = reader.GetInt32(0);
-                    string nombre = reader.GetString(1);
-                    decimal precio = reader.GetDecimal(2);
-                    string catNombre = reader.GetString(3);
-                    Console.WriteLine($"#{id} {nombre} — ${precio:F2} [{catNombre}]");
+                    // --- [C1] ---
+                    Console.WriteLine("[C1] Productos con su categoría:");
+                    string queryC1 = @"
+                        SELECT p.id, p.nombre, p.precio, c.nombre AS categoria_nombre 
+                        FROM productos p 
+                        INNER JOIN categorias c ON p.categoria_id = c.id 
+                        ORDER BY p.id;";
+
+                    using (var cmd = new SqlCommand(queryC1, conn, tx))
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            int id = reader.GetInt32(0);
+                            string nombre = reader.GetString(1);
+                            decimal precio = reader.GetDecimal(2);
+                            string catNombre = reader.GetString(3);
+                            Console.WriteLine($"#{id} {nombre} — ${precio:F2} [{catNombre}]");
+                        }
+                    }
+
+                    // --- [C2] ---
+                    Console.WriteLine("\n[C2] Detalle y total del pedido #1:");
+                    string queryC2 = @"
+                        SELECT p.nombre, dp.cantidad, dp.precio_unit 
+                        FROM detalle_pedido dp
+                        INNER JOIN productos p ON dp.producto_id = p.id
+                        WHERE dp.pedido_id = 1
+                        ORDER BY p.nombre DESC;";
+
+                    decimal totalPedido = 0;
+                    using (var cmd = new SqlCommand(queryC2, conn, tx))
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            string prodNombre = reader.GetString(0);
+                            int cantidad = reader.GetInt32(1);
+                            decimal precioUnit = reader.GetDecimal(2);
+                            decimal subtotal = cantidad * precioUnit;
+                            totalPedido += subtotal;
+
+                            Console.WriteLine($"{prodNombre} x{cantidad} @ ${precioUnit:F2} = ${subtotal:F2}");
+                        }
+                    }
+                    Console.WriteLine($"TOTAL pedido #1: ${totalPedido:F2}");
+
+                    // --- [U1] ---
+                    string queryU1 = "UPDATE productos SET precio = precio * 1.10 WHERE categoria_id = @catId;";
+                    using (var cmd = new SqlCommand(queryU1, conn, tx))
+                    {
+                        cmd.Parameters.AddWithValue("@catId", 1);
+                        int filasAfectadas = cmd.ExecuteNonQuery();
+                        Console.WriteLine($"\n[U1] Subí 10% precios de categoría #1 -> {filasAfectadas} filas.");
+                    }
+
+                    // --- [D1] ---
+                    string queryD1 = "DELETE FROM detalle_pedido WHERE pedido_id = @pedidoId AND producto_id = @productoId;";
+                    using (var cmd = new SqlCommand(queryD1, conn, tx))
+                    {
+                        cmd.Parameters.AddWithValue("@pedidoId", 1);
+                        cmd.Parameters.AddWithValue("@productoId", 2);
+                        int filasAfectadas = cmd.ExecuteNonQuery();
+                        Console.WriteLine($"[D1] Borré línea (pedido 1, producto 2) -> {filasAfectadas} filas.");
+                    }
+
+                    tx.Commit();
+                    Console.WriteLine("Operaciones confirmadas (commit).");
                 }
-            }
-
-            // --- [C2] ---
-            Console.WriteLine("\n[C2] Detalle y total del pedido #1:");
-            string queryC2 = @"
-                SELECT p.nombre, dp.cantidad, dp.precio_unitario 
-                FROM detalle_pedido dp
-                INNER JOIN productos p ON dp.producto_id = p.id
-                WHERE dp.pedido_id = 1
-                ORDER BY p.nombre DESC;";
-
-            decimal totalPedido = 0;
-            using (var cmd = new SqlCommand(queryC2, conn))
-            using (var reader = cmd.ExecuteReader())
-            {
-                while (reader.Read())
+                catch (Exception)
                 {
-                    string prodNombre = reader.GetString(0);
-                    int cantidad = reader.GetInt32(1);
-                    decimal precioUnitario = reader.GetDecimal(2);
-                    decimal subtotal = cantidad * precioUnitario;
-                    totalPedido += subtotal;
-
-                    Console.WriteLine($"{prodNombre} x{cantidad} @ ${precioUnitario:F2} = ${subtotal:F2}");
+                    tx.Rollback();
+                    throw;
                 }
-            }
-            Console.WriteLine($"TOTAL pedido #1: ${totalPedido:F2}");
-
-            // --- [U1] ---
-            string queryU1 = "UPDATE productos SET precio = precio * 1.10 WHERE categoria_id = @catId;";
-            using (var cmd = new SqlCommand(queryU1, conn))
-            {
-                cmd.Parameters.AddWithValue("@catId", 1);
-                int filasAfectadas = cmd.ExecuteNonQuery();
-                Console.WriteLine($"\n[U1] Subí 10% precios de categoría #1 -> {filasAfectadas} filas.");
-            }
-
-            // --- [D1] ---
-            string queryD1 = "DELETE FROM detalle_pedido WHERE pedido_id = @pedidoId AND producto_id = @productoId;";
-            using (var cmd = new SqlCommand(queryD1, conn))
-            {
-                cmd.Parameters.AddWithValue("@pedidoId", 1);
-                cmd.Parameters.AddWithValue("@productoId", 2);
-                int filasAfectadas = cmd.ExecuteNonQuery();
-                Console.WriteLine($"[D1] Borré línea (pedido 1, producto 2) -> {filasAfectadas} filas.");
             }
         }
     }
 
-public void DemostrarRollback()
+    public void DemostrarRollback()
     {
         using (var conn = new SqlConnection(ConnApp))
         {
             conn.Open();
 
+            // 1. Obtener precio ANTES
             decimal precioAntes = 0;
             string queryGet = "SELECT precio FROM productos WHERE id = 1;";
             using (var cmd = new SqlCommand(queryGet, conn))
@@ -296,6 +314,7 @@ public void DemostrarRollback()
             {
                 try
                 {
+                    // 2. Modificar el precio a $1.00 provisionalmente
                     string sqlUpdate = "UPDATE productos SET precio = 1.00 WHERE id = 1;";
                     using (var cmd = new SqlCommand(sqlUpdate, conn, tx))
                     {
@@ -303,6 +322,7 @@ public void DemostrarRollback()
                     }
                     Console.WriteLine("UPDATE aplicado (precio -> 1) dentro de la transacción.");
 
+                    // 3. Forzar el error de sintaxis exigido
                     string sqlFalla = "FORCE_ERROR_HERE;";
                     using (var cmdFalla = new SqlCommand(sqlFalla, conn, tx))
                     {
@@ -318,6 +338,7 @@ public void DemostrarRollback()
                 }
             }
 
+            // 4. Obtener precio DESPUÉS para validar la atomicidad
             decimal precioDespues = 0;
             using (var cmd = new SqlCommand(queryGet, conn))
             {
